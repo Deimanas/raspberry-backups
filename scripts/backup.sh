@@ -14,6 +14,29 @@ ENV_FILE="${ENV_FILE:-${ROOT_DIR}/.env}"
 DRY_RUN=false
 FORCE_WEEKLY=false
 
+# Default reikšmės (naudojamos jeigu .env nėra)
+BACKUP_BASE_DIR="${BACKUP_BASE_DIR:-/backups}"
+LOG_DIR="${LOG_DIR:-${ROOT_DIR}/logs}"
+RETENTION_DAILY_DAYS="${RETENTION_DAILY_DAYS:-7}"
+RETENTION_WEEKLY_WEEKS="${RETENTION_WEEKLY_WEEKS:-4}"
+MIN_FREE_MB="${MIN_FREE_MB:-2048}"
+COMPRESSION="${COMPRESSION:-gzip}"
+STOP_CONTAINERS="${STOP_CONTAINERS:-true}"
+DB_DUMP_TIMEOUT="${DB_DUMP_TIMEOUT:-300}"
+VOLUME_BACKUP_TIMEOUT="${VOLUME_BACKUP_TIMEOUT:-1800}"
+EXCLUDE_CONTAINERS="${EXCLUDE_CONTAINERS:-}"
+EXCLUDE_VOLUMES="${EXCLUDE_VOLUMES:-}"
+MYSQL_USER="${MYSQL_USER:-root}"
+MYSQL_PASSWORD="${MYSQL_PASSWORD:-}"
+MYSQL_DATABASE="${MYSQL_DATABASE:-}"
+POSTGRES_USER="${POSTGRES_USER:-postgres}"
+POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-}"
+POSTGRES_DB="${POSTGRES_DB:-postgres}"
+DISCORD_WEBHOOK_URL="${DISCORD_WEBHOOK_URL:-}"
+DISCORD_NOTIFY_ON_SUCCESS="${DISCORD_NOTIFY_ON_SUCCESS:-false}"
+DISCORD_NOTIFY_ON_ERROR="${DISCORD_NOTIFY_ON_ERROR:-true}"
+SERVER_NAME="${SERVER_NAME:-docker-host}"
+
 if [[ "${1:-}" == "--dry-run" ]]; then
   DRY_RUN=true
   shift
@@ -23,21 +46,22 @@ if [[ "${1:-}" == "--force-weekly" ]]; then
   shift
 fi
 
-if [[ ! -f "${ENV_FILE}" ]]; then
-  echo "KLAIDA: Nerastas ENV failas: ${ENV_FILE}. Nukopijuokite .env.example -> .env"
-  exit "${EXIT_CONFIG}"
+if [[ "${1:-}" == "--env-file" ]]; then
+  ENV_FILE="${2:-}"
+  shift 2
 fi
 
-# shellcheck disable=SC1090
-source "${ENV_FILE}"
+if [[ -f "${ENV_FILE}" ]]; then
+  # shellcheck disable=SC1090
+  source "${ENV_FILE}"
+else
+  echo "[WARN] ENV failas nerastas (${ENV_FILE}), naudojamos numatytos reikšmės ir esami shell ENV." >&2
+fi
 
-: "${BACKUP_BASE_DIR:?BACKUP_BASE_DIR nenurodytas}"
-: "${LOG_DIR:?LOG_DIR nenurodytas}"
-: "${RETENTION_DAILY_DAYS:?RETENTION_DAILY_DAYS nenurodytas}"
-: "${RETENTION_WEEKLY_WEEKS:?RETENTION_WEEKLY_WEEKS nenurodytas}"
-: "${MIN_FREE_MB:?MIN_FREE_MB nenurodytas}"
-: "${COMPRESSION:?COMPRESSION nenurodytas}"
-: "${STOP_CONTAINERS:?STOP_CONTAINERS nenurodytas}"
+if [[ "${COMPRESSION}" != "gzip" && "${COMPRESSION}" != "zstd" ]]; then
+  echo "KLAIDA: COMPRESSION turi būti 'gzip' arba 'zstd' (dabar: ${COMPRESSION})" >&2
+  exit "${EXIT_CONFIG}"
+fi
 
 mkdir -p "${BACKUP_BASE_DIR}" "${LOG_DIR}"
 

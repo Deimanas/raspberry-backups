@@ -33,11 +33,11 @@ Stabilus backup sprendimas Debian / Raspberry Pi OS serveriui, skirtas 10+ WordP
 
 ## 2) Įdiegimas
 
-1. Nukopijuokite konfigūraciją:
+1. **Pasirinktinai** susikurkite konfigūraciją iš pavyzdžio (nebūtina):
    ```bash
    cp .env.example .env
    ```
-2. Pakoreguokite `.env` pagal serverio poreikius (`BACKUP_BASE_DIR`, `MIN_FREE_MB`, exclude sąrašai, webhook).
+2. Jei `.env` nenaudojate, visus parametrus galite paduoti kaip shell ENV (pvz. per cron eilutę).
 3. Suteikite vykdymo teises (jei reikia):
    ```bash
    chmod +x scripts/backup.sh scripts/restore.sh
@@ -67,9 +67,15 @@ Stabilus backup sprendimas Debian / Raspberry Pi OS serveriui, skirtas 10+ WordP
 
 ## 4) Paleidimas rankiniu būdu
 
+> `.env` failas **nėra privalomas**. Jei jo nėra, naudojamos saugios numatytos reikšmės.
+
+
 ```bash
-# Pilnas backup
+# Pilnas backup su default reikšmėmis (be .env)
 scripts/backup.sh
+
+# Pilnas backup su laikinais ENV parametrais
+BACKUP_BASE_DIR=/srv/backups MIN_FREE_MB=4096 scripts/backup.sh
 
 # Testinis režimas (nieko nerašo)
 scripts/backup.sh --dry-run
@@ -85,7 +91,7 @@ scripts/backup.sh --force-weekly
    bash -n scripts/backup.sh
    bash -n scripts/restore.sh
    ```
-2. **Dry-run testas**
+2. **Dry-run testas (be .env)**
    ```bash
    scripts/backup.sh --dry-run
    ```

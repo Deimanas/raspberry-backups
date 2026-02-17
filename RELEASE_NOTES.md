@@ -1,6 +1,5 @@
-# Release v1.0.0
+# Release v1.0.1
 
-- Sukurta production-ready Docker backup sistema multi-site serveriams.
-- Pridėtas `backup.sh` su container/volume/DB backup, rotacija, logais, dry-run ir Discord notifikacijomis.
-- Pridėtas `restore.sh` su pilnu ir daliniu atkūrimu.
-- Pridėta `.env.example`, cron konfigūracija ir detalios diegimo/testavimo instrukcijos.
+- `backup.sh` ir `restore.sh` atnaujinti taip, kad `.env` failas būtų **neprivalomas**.
+- Pridėtos saugios numatytos reikšmės ir galimybė paduoti parametrus per shell ENV.
+- Atnaujinta dokumentacija su aiškiu paaiškinimu, kaip naudoti sistemą be `.env` failo.

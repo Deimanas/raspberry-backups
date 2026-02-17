@@ -10,12 +10,25 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 ENV_FILE="${ENV_FILE:-${ROOT_DIR}/.env}"
 
-if [[ ! -f "${ENV_FILE}" ]]; then
-  echo "KLAIDA: Nerastas ENV failas: ${ENV_FILE}."
-  exit "${EXIT_CONFIG}"
+# Default reikšmės jeigu .env nėra
+BACKUP_BASE_DIR="${BACKUP_BASE_DIR:-/backups}"
+MYSQL_USER="${MYSQL_USER:-root}"
+MYSQL_PASSWORD="${MYSQL_PASSWORD:-}"
+POSTGRES_USER="${POSTGRES_USER:-postgres}"
+POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-}"
+POSTGRES_DB="${POSTGRES_DB:-postgres}"
+
+if [[ "${1:-}" == "--env-file" ]]; then
+  ENV_FILE="${2:-}"
+  shift 2
 fi
-# shellcheck disable=SC1090
-source "${ENV_FILE}"
+
+if [[ -f "${ENV_FILE}" ]]; then
+  # shellcheck disable=SC1090
+  source "${ENV_FILE}"
+else
+  echo "[WARN] ENV failas nerastas (${ENV_FILE}), naudojamos numatytos reikšmės ir esami shell ENV." >&2
+fi
 
 if [[ $# -lt 2 ]]; then
   cat <<USAGE
