@@ -67,11 +67,11 @@ Stabilus backup sprendimas Debian / Raspberry Pi OS serveriui, skirtas 10+ WordP
 
 ## 4) Paleidimas rankiniu būdu
 
-> `.env` failas **nėra privalomas**. Jei jo nėra, naudojamos saugios numatytos reikšmės.
+> `.env` failas **nėra privalomas**. Jei jo nėra, `BACKUP_BASE_DIR` default yra `./backups` (projekto kataloge), kad nebūtų teisių klaidų su `/backups`.
 
 
 ```bash
-# Pilnas backup su default reikšmėmis (be .env)
+# Pilnas backup su default reikšmėmis (be .env, rašoma į ./backups)
 scripts/backup.sh
 
 # Pilnas backup su laikinais ENV parametrais

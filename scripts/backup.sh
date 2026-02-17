@@ -15,7 +15,7 @@ DRY_RUN=false
 FORCE_WEEKLY=false
 
 # Default reikšmės (naudojamos jeigu .env nėra)
-BACKUP_BASE_DIR="${BACKUP_BASE_DIR:-/backups}"
+BACKUP_BASE_DIR="${BACKUP_BASE_DIR:-${ROOT_DIR}/backups}"
 LOG_DIR="${LOG_DIR:-${ROOT_DIR}/logs}"
 RETENTION_DAILY_DAYS="${RETENTION_DAILY_DAYS:-7}"
 RETENTION_WEEKLY_WEEKS="${RETENTION_WEEKLY_WEEKS:-4}"
@@ -63,7 +63,11 @@ if [[ "${COMPRESSION}" != "gzip" && "${COMPRESSION}" != "zstd" ]]; then
   exit "${EXIT_CONFIG}"
 fi
 
-mkdir -p "${BACKUP_BASE_DIR}" "${LOG_DIR}"
+if ! mkdir -p "${BACKUP_BASE_DIR}" "${LOG_DIR}"; then
+  echo "KLAIDA: nepavyko sukurti katalogų BACKUP_BASE_DIR=${BACKUP_BASE_DIR}, LOG_DIR=${LOG_DIR}." >&2
+  echo "Patarimas: nustatykite rašomą kelią, pvz. BACKUP_BASE_DIR=${ROOT_DIR}/backups" >&2
+  exit "${EXIT_CONFIG}"
+fi
 
 RUN_TS="$(date +%F_%H-%M)"
 RUN_START_EPOCH="$(date +%s)"

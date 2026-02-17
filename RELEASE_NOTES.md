@@ -1,5 +1,5 @@
-# Release v1.0.1
+# Release v1.0.2
 
-- `backup.sh` ir `restore.sh` atnaujinti taip, kad `.env` failas būtų **neprivalomas**.
-- Pridėtos saugios numatytos reikšmės ir galimybė paduoti parametrus per shell ENV.
-- Atnaujinta dokumentacija su aiškiu paaiškinimu, kaip naudoti sistemą be `.env` failo.
+- Pataisyta numatyto kelio problema: be `.env` backupai pagal nutylėjimą rašomi į projekto `./backups`, ne į `/backups`.
+- Pridėtas aiškus klaidos pranešimas, jei katalogų sukurti nepavyksta, su rekomendacija kaip nustatyti rašomą `BACKUP_BASE_DIR`.
+- Atnaujinta dokumentacija ir `.env.example` su paaiškinimu dėl teisių (`Permission denied`) atvejų.

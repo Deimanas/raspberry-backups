@@ -11,7 +11,7 @@ ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 ENV_FILE="${ENV_FILE:-${ROOT_DIR}/.env}"
 
 # Default reikšmės jeigu .env nėra
-BACKUP_BASE_DIR="${BACKUP_BASE_DIR:-/backups}"
+BACKUP_BASE_DIR="${BACKUP_BASE_DIR:-${ROOT_DIR}/backups}"
 MYSQL_USER="${MYSQL_USER:-root}"
 MYSQL_PASSWORD="${MYSQL_PASSWORD:-}"
 POSTGRES_USER="${POSTGRES_USER:-postgres}"
