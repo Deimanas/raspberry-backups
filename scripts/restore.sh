@@ -26,8 +26,6 @@ fi
 if [[ -f "${ENV_FILE}" ]]; then
   # shellcheck disable=SC1090
   source "${ENV_FILE}"
-else
-  echo "[WARN] ENV failas nerastas (${ENV_FILE}), naudojamos numatytos reikšmės ir esami shell ENV." >&2
 fi
 
 if [[ $# -lt 2 ]]; then

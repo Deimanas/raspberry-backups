@@ -36,6 +36,8 @@ DISCORD_WEBHOOK_URL="${DISCORD_WEBHOOK_URL:-}"
 DISCORD_NOTIFY_ON_SUCCESS="${DISCORD_NOTIFY_ON_SUCCESS:-false}"
 DISCORD_NOTIFY_ON_ERROR="${DISCORD_NOTIFY_ON_ERROR:-true}"
 SERVER_NAME="${SERVER_NAME:-docker-host}"
+DB_CLIENT_IMAGE_MYSQL="${DB_CLIENT_IMAGE_MYSQL:-mariadb:11}"
+DB_CLIENT_IMAGE_POSTGRES="${DB_CLIENT_IMAGE_POSTGRES:-postgres:16}"
 
 if [[ "${1:-}" == "--dry-run" ]]; then
   DRY_RUN=true
@@ -54,8 +56,6 @@ fi
 if [[ -f "${ENV_FILE}" ]]; then
   # shellcheck disable=SC1090
   source "${ENV_FILE}"
-else
-  echo "[WARN] ENV failas nerastas (${ENV_FILE}), naudojamos numatytos reikšmės ir esami shell ENV." >&2
 fi
 
 if [[ "${COMPRESSION}" != "gzip" && "${COMPRESSION}" != "zstd" ]]; then
@@ -179,42 +179,55 @@ if [[ "${COMPRESSION}" == "zstd" ]]; then
   compress_args=(--zstd -cf)
 fi
 
-backup_container_volumes() {
+backup_container_mounts() {
   local container="$1"
   local cdir="${RUN_DIR}/containers/${container}"
   mkdir -p "${cdir}"
 
-  mapfile -t vols < <(docker inspect -f '{{range .Mounts}}{{if eq .Type "volume"}}{{.Name}} {{.Destination}}{{println}}{{end}}{{end}}' "${container}" | awk 'NF')
-  if (( ${#vols[@]} == 0 )); then
-    log_warn "${container}: volume mountų nerasta, praleidžiama."
+  mapfile -t mounts < <(docker inspect -f '{{range .Mounts}}{{.Type}}|{{.Name}}|{{.Source}}|{{.Destination}}{{println}}{{end}}' "${container}" | awk 'NF')
+  if (( ${#mounts[@]} == 0 )); then
+    log_warn "${container}: mountų nerasta, praleidžiama."
     return 0
   fi
 
   if [[ "${STOP_CONTAINERS}" == "true" ]]; then
-    log_info "${container}: stabdomas prieš volume backup"
+    log_info "${container}: stabdomas prieš mount backup"
     run_cmd docker stop "${container}" >/dev/null
   fi
 
-  local vol_line vol_name vol_dest archive
-  for vol_line in "${vols[@]}"; do
-    vol_name="$(awk '{print $1}' <<<"${vol_line}")"
-    vol_dest="$(awk '{print $2}' <<<"${vol_line}")"
+  local mline mtype mname msource mdest archive safe_name
+  for mline in "${mounts[@]}"; do
+    IFS='|' read -r mtype mname msource mdest <<<"${mline}"
 
-    if is_excluded "${vol_name}" "${excluded_volumes[@]}"; then
-      log_warn "${container}: volume ${vol_name} excluded"
-      continue
+    if [[ "${mtype}" == "volume" ]]; then
+      if is_excluded "${mname}" "${excluded_volumes[@]}"; then
+        log_warn "${container}: volume ${mname} excluded"
+        continue
+      fi
+      archive="${cdir}/volume-${mname}.${compress_ext}"
+      log_info "${container}: backup volume ${mname} (${mdest}) -> ${archive}"
+      run_cmd timeout "${VOLUME_BACKUP_TIMEOUT}" docker run --rm \
+        -v "${mname}:/source:ro" \
+        -v "${cdir}:/dest" \
+        alpine sh -c "tar ${compress_args[*]} /dest/volume-${mname}.${compress_ext} -C /source ."
+    elif [[ "${mtype}" == "bind" ]]; then
+      if [[ ! -d "${msource}" ]]; then
+        log_warn "${container}: bind šaltinis neegzistuoja arba nėra katalogas (${msource}), praleidžiama"
+        continue
+      fi
+      safe_name="$(sed 's#[^a-zA-Z0-9._-]#_#g' <<<"${msource}")"
+      archive="${cdir}/bind-${safe_name}.${compress_ext}"
+      log_info "${container}: backup bind ${msource} (${mdest}) -> ${archive}"
+      if [[ "${COMPRESSION}" == "zstd" ]]; then
+        run_cmd timeout "${VOLUME_BACKUP_TIMEOUT}" tar --zstd -cf "${archive}" -C "${msource}" .
+      else
+        run_cmd timeout "${VOLUME_BACKUP_TIMEOUT}" tar -czf "${archive}" -C "${msource}" .
+      fi
     fi
-
-    archive="${cdir}/volume-${vol_name}.${compress_ext}"
-    log_info "${container}: backup volume ${vol_name} (${vol_dest}) -> ${archive}"
-    run_cmd timeout "${VOLUME_BACKUP_TIMEOUT}" docker run --rm \
-      -v "${vol_name}:/source:ro" \
-      -v "${cdir}:/dest" \
-      alpine sh -c "tar ${compress_args[*]} /dest/volume-${vol_name}.${compress_ext} -C /source ."
   done
 
   if [[ "${STOP_CONTAINERS}" == "true" ]]; then
-    log_info "${container}: paleidžiamas po volume backup"
+    log_info "${container}: paleidžiamas po mount backup"
     run_cmd docker start "${container}" >/dev/null
   fi
 }
@@ -278,8 +291,12 @@ db_dump_mysql() {
     return 0
   fi
 
-  timeout "${DB_DUMP_TIMEOUT}" docker exec "${container}" sh -c \
-    "mysqldump -u '${db_user}' ${pass_arg[*]-} --single-transaction --quick --routines --events ${db_clause}" > "${out_file}"
+  if docker exec "${container}" sh -c 'command -v mysqldump >/dev/null 2>&1'; then
+    timeout "${DB_DUMP_TIMEOUT}" docker exec "${container}" sh -c       "mysqldump -u '${db_user}' ${pass_arg[*]-} --single-transaction --quick --routines --events ${db_clause}" > "${out_file}"
+  else
+    log_warn "${container}: mysqldump nerastas konteineryje, naudojamas external klientas ${DB_CLIENT_IMAGE_MYSQL}"
+    timeout "${DB_DUMP_TIMEOUT}" docker run --rm --network "container:${container}" "${DB_CLIENT_IMAGE_MYSQL}" sh -c       "mysqldump -h 127.0.0.1 -u '${db_user}' ${pass_arg[*]-} --single-transaction --quick --routines --events ${db_clause}" > "${out_file}"
+  fi
 }
 
 db_dump_postgres() {
@@ -303,8 +320,12 @@ db_dump_postgres() {
     return 0
   fi
 
-  timeout "${DB_DUMP_TIMEOUT}" docker exec -e "PGPASSWORD=${db_pass}" "${container}" \
-    pg_dump -U "${db_user}" -d "${db_name}" -Fc > "${out_file}"
+  if docker exec "${container}" sh -c 'command -v pg_dump >/dev/null 2>&1'; then
+    timeout "${DB_DUMP_TIMEOUT}" docker exec -e "PGPASSWORD=${db_pass}" "${container}"       pg_dump -U "${db_user}" -d "${db_name}" -Fc > "${out_file}"
+  else
+    log_warn "${container}: pg_dump nerastas konteineryje, naudojamas external klientas ${DB_CLIENT_IMAGE_POSTGRES}"
+    timeout "${DB_DUMP_TIMEOUT}" docker run --rm --network "container:${container}" -e "PGPASSWORD=${db_pass}" "${DB_CLIENT_IMAGE_POSTGRES}"       pg_dump -h 127.0.0.1 -U "${db_user}" -d "${db_name}" -Fc > "${out_file}"
+  fi
 }
 
 for container in "${containers[@]}"; do
@@ -314,7 +335,7 @@ for container in "${containers[@]}"; do
   fi
 
   log_info "Apdorojamas container: ${container}"
-  backup_container_volumes "${container}"
+  backup_container_mounts "${container}"
 
   db_type="$(detect_db_type "${container}")"
   case "${db_type}" in

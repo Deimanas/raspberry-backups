@@ -52,10 +52,10 @@ Stabilus backup sprendimas Debian / Raspberry Pi OS serveriui, skirtas 10+ WordP
 ## 3) Kas daroma per backup
 
 - Aptinkami visi aktyvūs Docker containeriai.
-- Kiekvienam containeriui daromas atskiras volume archyvas.
+- Kiekvienam containeriui daromas atskiras mount backup (Docker volume + bind mount).
 - DB containeriams automatiškai aptinkamas tipas:
-  - MariaDB/MySQL -> `mysqldump` per `docker exec`
-  - Postgres -> `pg_dump`
+  - MariaDB/MySQL -> `mysqldump` per `docker exec` (jei nėra, naudojamas external DB client image)
+  - Postgres -> `pg_dump` (jei nėra, naudojamas external DB client image)
 - Jei `STOP_CONTAINERS=true`, prieš volume backup konteineris sustabdomas ir po to paleidžiamas.
 - Atliktas laisvos vietos patikrinimas (`MIN_FREE_MB`).
 - Veikia rotacija:
@@ -67,7 +67,7 @@ Stabilus backup sprendimas Debian / Raspberry Pi OS serveriui, skirtas 10+ WordP
 
 ## 4) Paleidimas rankiniu būdu
 
-> `.env` failas **nėra privalomas**. Jei jo nėra, `BACKUP_BASE_DIR` default yra `./backups` (projekto kataloge), kad nebūtų teisių klaidų su `/backups`.
+> `.env` failas **nėra privalomas**. Jei jo nėra, script tyliai naudoja numatytas reikšmes (be papildomo WARN) ir `BACKUP_BASE_DIR=./backups`.
 
 
 ```bash
