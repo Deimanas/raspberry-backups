@@ -1,0 +1,6 @@
+# /etc/cron.d/docker-backup
+# Kas 6 val. backup
+0 */6 * * * root cd /workspace/raspberry-backups && /usr/bin/env bash scripts/backup.sh >> logs/cron.log 2>&1
+
+# Sekmadieniais 03:30 priverstinis weekly snapshot
+30 3 * * 0 root cd /workspace/raspberry-backups && /usr/bin/env bash scripts/backup.sh --force-weekly >> logs/cron.log 2>&1
