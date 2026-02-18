@@ -51,7 +51,9 @@ Stabilus backup sprendimas Debian / Raspberry Pi OS serveriui, skirtas 10+ WordP
 
 ## 3) Kas daroma per backup
 
-- Aptinkami visi aktyvūs Docker containeriai.
+- Aptinkami Docker containeriai pagal `CONTAINER_SCOPE`:
+  - `all` (numatyta): visi konteineriai (`docker ps -a`)
+  - `running`: tik aktyvūs konteineriai (`docker ps`)
 - Kiekvienam containeriui daromas atskiras mount backup (Docker volume + bind mount).
 - DB containeriams automatiškai aptinkamas tipas:
   - MariaDB/MySQL -> `mysqldump` per `docker exec` (jei nėra, naudojamas external DB client image)

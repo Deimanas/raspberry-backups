@@ -22,8 +22,11 @@ RETENTION_WEEKLY_WEEKS="${RETENTION_WEEKLY_WEEKS:-4}"
 MIN_FREE_MB="${MIN_FREE_MB:-2048}"
 COMPRESSION="${COMPRESSION:-gzip}"
 STOP_CONTAINERS="${STOP_CONTAINERS:-true}"
+CONTAINER_SCOPE="${CONTAINER_SCOPE:-all}"
 DB_DUMP_TIMEOUT="${DB_DUMP_TIMEOUT:-300}"
 VOLUME_BACKUP_TIMEOUT="${VOLUME_BACKUP_TIMEOUT:-1800}"
+MYSQL_DUMP_RETRIES="${MYSQL_DUMP_RETRIES:-5}"
+MYSQL_DUMP_RETRY_DELAY="${MYSQL_DUMP_RETRY_DELAY:-3}"
 EXCLUDE_CONTAINERS="${EXCLUDE_CONTAINERS:-}"
 EXCLUDE_VOLUMES="${EXCLUDE_VOLUMES:-}"
 MYSQL_USER="${MYSQL_USER:-root}"
@@ -60,6 +63,11 @@ fi
 
 if [[ "${COMPRESSION}" != "gzip" && "${COMPRESSION}" != "zstd" ]]; then
   echo "KLAIDA: COMPRESSION turi būti 'gzip' arba 'zstd' (dabar: ${COMPRESSION})" >&2
+  exit "${EXIT_CONFIG}"
+fi
+
+if [[ "${CONTAINER_SCOPE}" != "all" && "${CONTAINER_SCOPE}" != "running" ]]; then
+  echo "KLAIDA: CONTAINER_SCOPE turi būti 'all' arba 'running' (dabar: ${CONTAINER_SCOPE})" >&2
   exit "${EXIT_CONFIG}"
 fi
 
@@ -152,9 +160,17 @@ if ! command -v docker >/dev/null 2>&1; then
   exit "${EXIT_DOCKER}"
 fi
 
-mapfile -t containers < <(docker ps --format '{{.Names}}')
+if [[ "${CONTAINER_SCOPE}" == "all" ]]; then
+  mapfile -t containers < <(docker ps -a --format '{{.Names}}')
+else
+  mapfile -t containers < <(docker ps --format '{{.Names}}')
+fi
 if (( ${#containers[@]} == 0 )); then
-  log_warn "Aktyvių containerių nerasta."
+  if [[ "${CONTAINER_SCOPE}" == "all" ]]; then
+    log_warn "Containerių nerasta."
+  else
+    log_warn "Aktyvių containerių nerasta."
+  fi
 fi
 
 IFS=',' read -r -a excluded_containers <<<"${EXCLUDE_CONTAINERS:-}"
@@ -182,7 +198,12 @@ fi
 backup_container_mounts() {
   local container="$1"
   local cdir="${RUN_DIR}/containers/${container}"
+  local was_running=false
   mkdir -p "${cdir}"
+
+  if [[ "$(docker inspect -f '{{.State.Running}}' "${container}")" == "true" ]]; then
+    was_running=true
+  fi
 
   mapfile -t mounts < <(docker inspect -f '{{range .Mounts}}{{.Type}}|{{.Name}}|{{.Source}}|{{.Destination}}{{println}}{{end}}' "${container}" | awk 'NF')
   if (( ${#mounts[@]} == 0 )); then
@@ -190,9 +211,11 @@ backup_container_mounts() {
     return 0
   fi
 
-  if [[ "${STOP_CONTAINERS}" == "true" ]]; then
+  if [[ "${STOP_CONTAINERS}" == "true" && "${was_running}" == "true" ]]; then
     log_info "${container}: stabdomas prieš mount backup"
     run_cmd docker stop "${container}" >/dev/null
+  elif [[ "${STOP_CONTAINERS}" == "true" ]]; then
+    log_info "${container}: jau sustabdytas, nestabdomas"
   fi
 
   local mline mtype mname msource mdest archive safe_name
@@ -219,14 +242,20 @@ backup_container_mounts() {
       archive="${cdir}/bind-${safe_name}.${compress_ext}"
       log_info "${container}: backup bind ${msource} (${mdest}) -> ${archive}"
       if [[ "${COMPRESSION}" == "zstd" ]]; then
-        run_cmd timeout "${VOLUME_BACKUP_TIMEOUT}" tar --zstd -cf "${archive}" -C "${msource}" .
+        run_cmd timeout "${VOLUME_BACKUP_TIMEOUT}" docker run --rm \
+          -v "${msource}:/source:ro" \
+          -v "${cdir}:/dest" \
+          alpine sh -c "tar --zstd -cf /dest/bind-${safe_name}.${compress_ext} -C /source ."
       else
-        run_cmd timeout "${VOLUME_BACKUP_TIMEOUT}" tar -czf "${archive}" -C "${msource}" .
+        run_cmd timeout "${VOLUME_BACKUP_TIMEOUT}" docker run --rm \
+          -v "${msource}:/source:ro" \
+          -v "${cdir}:/dest" \
+          alpine sh -c "tar -czf /dest/bind-${safe_name}.${compress_ext} -C /source ."
       fi
     fi
   done
 
-  if [[ "${STOP_CONTAINERS}" == "true" ]]; then
+  if [[ "${STOP_CONTAINERS}" == "true" && "${was_running}" == "true" ]]; then
     log_info "${container}: paleidžiamas po mount backup"
     run_cmd docker start "${container}" >/dev/null
   fi
@@ -262,41 +291,106 @@ detect_db_type() {
 
 db_dump_mysql() {
   local container="$1"
-  local out_file="$2"
+  local out_dir="$2"
   local env_dump db_user db_pass db_name
   env_dump=$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "${container}")
 
-  db_user=$(awk -F= '/^(MYSQL_USER|MARIADB_USER)=/{print $2; exit}' <<<"${env_dump}" || true)
-  db_user="${db_user:-${MYSQL_USER:-root}}"
+  if [[ -n "${MYSQL_USER:-}" ]]; then
+    db_user="${MYSQL_USER}"
+  else
+    db_user=$(awk -F= '/^(MYSQL_USER|MARIADB_USER)=/{print $2; exit}' <<<"${env_dump}" || true)
+    db_user="${db_user:-root}"
+  fi
 
-  db_pass=$(awk -F= '/^(MYSQL_PASSWORD|MYSQL_ROOT_PASSWORD|MARIADB_PASSWORD|MARIADB_ROOT_PASSWORD)=/{print $2; exit}' <<<"${env_dump}" || true)
-  db_pass="${db_pass:-${MYSQL_PASSWORD:-}}"
+  if [[ -n "${MYSQL_PASSWORD:-}" ]]; then
+    db_pass="${MYSQL_PASSWORD}"
+  else
+    db_pass=$(awk -F= '/^(MYSQL_PASSWORD|MYSQL_ROOT_PASSWORD|MARIADB_PASSWORD|MARIADB_ROOT_PASSWORD)=/{print $2; exit}' <<<"${env_dump}" || true)
+  fi
 
   db_name=$(awk -F= '/^(MYSQL_DATABASE|MARIADB_DATABASE)=/{print $2; exit}' <<<"${env_dump}" || true)
   db_name="${db_name:-${MYSQL_DATABASE:-}}"
 
-  local db_clause="--all-databases"
-  if [[ -n "${db_name}" ]]; then
-    db_clause="--databases ${db_name}"
-  fi
-
-  local pass_arg=()
+  local mysql_env=()
   if [[ -n "${db_pass}" ]]; then
-    pass_arg=(-p"${db_pass}")
+    mysql_env=(-e "MYSQL_PWD=${db_pass}")
   fi
 
-  log_info "${container}: kuriamas MySQL/MariaDB dump -> ${out_file}"
+  mkdir -p "${out_dir}"
+  log_info "${container}: kuriami atskiri MySQL/MariaDB dump failai kataloge ${out_dir}"
   if [[ "${DRY_RUN}" == "true" ]]; then
-    log_warn "DRY-RUN: docker exec ${container} mysqldump ..."
+    log_warn "DRY-RUN: docker exec ${container} mysqldump/mariadb-dump (po failą kiekvienai DB)"
     return 0
   fi
 
-  if docker exec "${container}" sh -c 'command -v mysqldump >/dev/null 2>&1'; then
-    timeout "${DB_DUMP_TIMEOUT}" docker exec "${container}" sh -c       "mysqldump -u '${db_user}' ${pass_arg[*]-} --single-transaction --quick --routines --events ${db_clause}" > "${out_file}"
+  local use_external=false
+  local query_cmd
+  if docker exec "${container}" sh -c 'command -v mysqldump >/dev/null 2>&1 || command -v mariadb-dump >/dev/null 2>&1'; then
+    query_cmd=(docker exec "${mysql_env[@]}" "${container}" sh -c "MYSQL_BIN=\$(command -v mysql || command -v mariadb); [ -n \"\${MYSQL_BIN}\" ] || { echo 'mysql/mariadb client nerastas' >&2; exit 127; }; \"\${MYSQL_BIN}\" -h 127.0.0.1 -N -B -u '${db_user}' -e 'SHOW DATABASES'")
   else
-    log_warn "${container}: mysqldump nerastas konteineryje, naudojamas external klientas ${DB_CLIENT_IMAGE_MYSQL}"
-    timeout "${DB_DUMP_TIMEOUT}" docker run --rm --network "container:${container}" "${DB_CLIENT_IMAGE_MYSQL}" sh -c       "mysqldump -h 127.0.0.1 -u '${db_user}' ${pass_arg[*]-} --single-transaction --quick --routines --events ${db_clause}" > "${out_file}"
+    use_external=true
+    log_warn "${container}: mysqldump/mariadb-dump nerastas konteineryje, naudojamas external klientas ${DB_CLIENT_IMAGE_MYSQL}"
+    query_cmd=(docker run --rm --network "container:${container}" "${mysql_env[@]}" "${DB_CLIENT_IMAGE_MYSQL}" sh -c "MYSQL_BIN=\$(command -v mysql || command -v mariadb); [ -n \"\${MYSQL_BIN}\" ] || { echo 'mysql/mariadb client nerastas' >&2; exit 127; }; \"\${MYSQL_BIN}\" -h 127.0.0.1 -N -B -u '${db_user}' -e 'SHOW DATABASES'")
   fi
+
+  local db_lines db_count attempt db safe_db out_file tmp_out_file
+  db_lines=""
+  if [[ -n "${db_name}" ]]; then
+    db_lines="$(tr ',' '\n' <<<"${db_name}")"
+  else
+    for ((attempt=1; attempt<=MYSQL_DUMP_RETRIES; attempt++)); do
+      if db_lines="$(timeout "${DB_DUMP_TIMEOUT}" "${query_cmd[@]}")"; then
+        break
+      fi
+      if (( attempt < MYSQL_DUMP_RETRIES )); then
+        log_warn "${container}: DB sąrašo gavimas nepavyko (attempt ${attempt}/${MYSQL_DUMP_RETRIES}), kartojama po ${MYSQL_DUMP_RETRY_DELAY}s"
+        sleep "${MYSQL_DUMP_RETRY_DELAY}"
+      fi
+    done
+    [[ -n "${db_lines}" ]] || {
+      log_err "${container}: nepavyko gauti DB sąrašo po ${MYSQL_DUMP_RETRIES} bandymų"
+      return 1
+    }
+  fi
+
+  db_count=0
+  while IFS= read -r db; do
+    db="${db#"${db%%[![:space:]]*}"}"
+    db="${db%"${db##*[![:space:]]}"}"
+    [[ -z "${db}" ]] && continue
+    safe_db="$(sed 's#[^a-zA-Z0-9._-]#_#g' <<<"${db}")"
+    out_file="${out_dir}/${container}-mysql-${safe_db}.sql"
+    tmp_out_file="${out_file}.tmp"
+    db_count=$((db_count + 1))
+
+    for ((attempt=1; attempt<=MYSQL_DUMP_RETRIES; attempt++)); do
+      if [[ "${use_external}" == "true" ]] && timeout "${DB_DUMP_TIMEOUT}" docker run --rm --network "container:${container}" "${mysql_env[@]}" -e "DB_NAME=${db}" "${DB_CLIENT_IMAGE_MYSQL}" sh -c "DUMP_BIN=\$(command -v mysqldump || command -v mariadb-dump); [ -n \"\${DUMP_BIN}\" ] || { echo 'mysqldump ir mariadb-dump nerasti' >&2; exit 127; }; \"\${DUMP_BIN}\" -h 127.0.0.1 -u '${db_user}' --single-transaction --quick --routines --events --databases \"\${DB_NAME}\"" > "${tmp_out_file}"; then
+        mv "${tmp_out_file}" "${out_file}"
+        log_info "${container}: DB ${db} dump -> ${out_file}"
+        break
+      elif [[ "${use_external}" != "true" ]] && timeout "${DB_DUMP_TIMEOUT}" docker exec "${mysql_env[@]}" -e "DB_NAME=${db}" "${container}" sh -c "DUMP_BIN=\$(command -v mysqldump || command -v mariadb-dump); \"\${DUMP_BIN}\" -h 127.0.0.1 -u '${db_user}' --single-transaction --quick --routines --events --databases \"\${DB_NAME}\"" > "${tmp_out_file}"; then
+        mv "${tmp_out_file}" "${out_file}"
+        log_info "${container}: DB ${db} dump -> ${out_file}"
+        break
+      fi
+      rm -f "${tmp_out_file}"
+      if (( attempt < MYSQL_DUMP_RETRIES )); then
+        log_warn "${container}: DB ${db} dump nepavyko (attempt ${attempt}/${MYSQL_DUMP_RETRIES}), kartojama po ${MYSQL_DUMP_RETRY_DELAY}s"
+        sleep "${MYSQL_DUMP_RETRY_DELAY}"
+      fi
+      [[ "${attempt}" -eq "${MYSQL_DUMP_RETRIES}" ]] && {
+        log_err "${container}: DB ${db} dump nepavyko po ${MYSQL_DUMP_RETRIES} bandymų"
+        return 1
+      }
+    done
+  done <<<"${db_lines}"
+
+  if (( db_count == 0 )); then
+    log_err "${container}: nerasta DB dumpinimui"
+    return 1
+  fi
+
+  return 0
 }
 
 db_dump_postgres() {
@@ -340,7 +434,7 @@ for container in "${containers[@]}"; do
   db_type="$(detect_db_type "${container}")"
   case "${db_type}" in
     mysql)
-      db_dump_mysql "${container}" "${RUN_DIR}/databases/${container}-mysql.sql"
+      db_dump_mysql "${container}" "${RUN_DIR}/databases"
       ;;
     postgres)
       db_dump_postgres "${container}" "${RUN_DIR}/databases/${container}-postgres.dump"

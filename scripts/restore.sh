@@ -93,7 +93,15 @@ restore_volumes() {
 }
 
 restore_mysql() {
-  [[ -f "${DB_MYSQL_FILE}" ]] || { log "MySQL dump failas nerastas: ${DB_MYSQL_FILE}"; return 0; }
+  local mysql_files=()
+  mapfile -t mysql_files < <(find "${RUN_DIR}/databases" -maxdepth 1 -type f -name "${TARGET_CONTAINER}-mysql-*.sql" | sort)
+  if (( ${#mysql_files[@]} == 0 )) && [[ -f "${DB_MYSQL_FILE}" ]]; then
+    mysql_files=("${DB_MYSQL_FILE}")
+  fi
+  if (( ${#mysql_files[@]} == 0 )); then
+    log "MySQL dump failai nerasti: ${RUN_DIR}/databases/${TARGET_CONTAINER}-mysql-*.sql"
+    return 0
+  fi
 
   local env_dump db_user db_pass
   env_dump=$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "${TARGET_CONTAINER}" || true)
@@ -102,11 +110,14 @@ restore_mysql() {
   db_pass=$(awk -F= '/^(MYSQL_PASSWORD|MYSQL_ROOT_PASSWORD|MARIADB_PASSWORD|MARIADB_ROOT_PASSWORD)=/{print $2; exit}' <<<"${env_dump}" || true)
   db_pass="${db_pass:-${MYSQL_PASSWORD:-}}"
 
-  local pass_arg=()
-  [[ -n "${db_pass}" ]] && pass_arg=(-p"${db_pass}")
+  local mysql_env=()
+  [[ -n "${db_pass}" ]] && mysql_env=(-e "MYSQL_PWD=${db_pass}")
 
-  log "Atkuriamas MySQL/MariaDB dump į ${TARGET_CONTAINER}"
-  docker exec -i "${TARGET_CONTAINER}" sh -c "mysql -u '${db_user}' ${pass_arg[*]-}" < "${DB_MYSQL_FILE}"
+  local mysql_file
+  for mysql_file in "${mysql_files[@]}"; do
+    log "Atkuriamas MySQL/MariaDB dump iš ${mysql_file} į ${TARGET_CONTAINER}"
+    docker exec "${mysql_env[@]}" -i "${TARGET_CONTAINER}" sh -c "mysql -h 127.0.0.1 -u '${db_user}'" < "${mysql_file}"
+  done
 }
 
 restore_postgres() {
