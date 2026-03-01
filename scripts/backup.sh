@@ -38,6 +38,7 @@ POSTGRES_DB="${POSTGRES_DB:-postgres}"
 DISCORD_WEBHOOK_URL="${DISCORD_WEBHOOK_URL:-}"
 DISCORD_NOTIFY_ON_SUCCESS="${DISCORD_NOTIFY_ON_SUCCESS:-false}"
 DISCORD_NOTIFY_ON_ERROR="${DISCORD_NOTIFY_ON_ERROR:-true}"
+DISCORD_NOTIFY_ON_WARNING="${DISCORD_NOTIFY_ON_WARNING:-true}"
 SERVER_NAME="${SERVER_NAME:-docker-host}"
 DB_CLIENT_IMAGE_MYSQL="${DB_CLIENT_IMAGE_MYSQL:-mariadb:11}"
 DB_CLIENT_IMAGE_POSTGRES="${DB_CLIENT_IMAGE_POSTGRES:-postgres:16}"
@@ -112,6 +113,59 @@ run_cmd() {
   "$@"
 }
 
+has_passwordless_sudo() {
+  command -v sudo >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1
+}
+
+move_backup_to_weekly() {
+  local old="$1"
+  local week_dir="$2"
+  local bname
+  bname="$(basename "${old}")"
+
+  if [[ -d "${week_dir}/${bname}" ]]; then
+    log_warn "Weekly backup jau yra, praleidžiama: ${week_dir}/${bname}"
+    return 0
+  fi
+
+  log_info "Perkeliama į weekly: ${old}"
+  if run_cmd mv "${old}" "${week_dir}/${bname}"; then
+    return 0
+  fi
+
+  if has_passwordless_sudo; then
+    log_warn "Nepavyko perkelti su esamu vartotoju, bandoma su sudo: ${old}"
+    if sudo -n mv "${old}" "${week_dir}/${bname}"; then
+      discord_notify warning "Retention panaudojo sudo perkeliant backup į weekly: ${old}"
+      return 0
+    fi
+  fi
+
+  log_warn "Nepavyko perkelti į weekly, paliekama vietoje: ${old}"
+  return 0
+}
+
+remove_backup_dir() {
+  local old="$1"
+  local kind="$2"
+
+  log_info "Šalinamas pasenęs ${kind} backup: ${old}"
+  if run_cmd rm -rf "${old}"; then
+    return 0
+  fi
+
+  if has_passwordless_sudo; then
+    log_warn "Nepavyko pašalinti su esamu vartotoju, bandoma su sudo: ${old}"
+    if sudo -n rm -rf "${old}"; then
+      discord_notify warning "Retention panaudojo sudo šalinant pasenusį ${kind} backup: ${old}"
+      return 0
+    fi
+  fi
+
+  log_warn "Nepavyko pašalinti pasenusio ${kind} backup: ${old}"
+  return 0
+}
+
 discord_notify() {
   local status="$1"
   local message="$2"
@@ -124,6 +178,9 @@ discord_notify() {
     send=true
   fi
   if [[ "${status}" == "error" && "${DISCORD_NOTIFY_ON_ERROR:-true}" == "true" ]]; then
+    send=true
+  fi
+  if [[ "${status}" == "warning" && "${DISCORD_NOTIFY_ON_WARNING:-true}" == "true" ]]; then
     send=true
   fi
 
@@ -458,21 +515,15 @@ find "${BACKUP_BASE_DIR}" -mindepth 1 -maxdepth 1 -type d -name '20??-??-??_??-?
   if [[ "${is_weekly}" == "true" ]]; then
     week_dir="${BACKUP_BASE_DIR}/weekly"
     mkdir -p "${week_dir}"
-    bname="$(basename "${old}")"
-    if [[ ! -d "${week_dir}/${bname}" ]]; then
-      log_info "Perkeliama į weekly: ${old}"
-      run_cmd mv "${old}" "${week_dir}/${bname}"
-    fi
+    move_backup_to_weekly "${old}" "${week_dir}"
   else
-    log_info "Šalinamas pasenęs daily backup: ${old}"
-    run_cmd rm -rf "${old}"
+    remove_backup_dir "${old}" "daily"
   fi
 done
 
 mkdir -p "${BACKUP_BASE_DIR}/weekly"
 find "${BACKUP_BASE_DIR}/weekly" -mindepth 1 -maxdepth 1 -type d -mtime "+$((RETENTION_WEEKLY_WEEKS * 7))" -print0 | while IFS= read -r -d '' old_weekly; do
-  log_info "Šalinamas pasenęs weekly backup: ${old_weekly}"
-  run_cmd rm -rf "${old_weekly}"
+  remove_backup_dir "${old_weekly}" "weekly"
 done
 
 RUN_END_EPOCH="$(date +%s)"
